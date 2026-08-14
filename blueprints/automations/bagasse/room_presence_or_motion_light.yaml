@@ -1,0 +1,82 @@
+# More info about automations/blueprints:
+# - https://www.home-assistant.io/docs/automation/basics/
+# - https://www.home-assistant.io/docs/blueprint/
+blueprint:
+  name: Room Motion/Presence Light
+  description: >
+    Turn on lights in a room when motion or presence is detected, and turn them off
+    after all motion and occupancy sensors in the room have cleared, plus an optional wait.
+  domain: automation
+  author: Baptiste Agasse <baptiste.agasse@gmail.com>
+  source_url: https://github.com/bagasse/homeassistant-automations/blob/main/blueprints/automation/bagasse/room_presence_or_motion_light.yaml
+  homeassistant:
+    min_version: "2026.7.0" # Introduce motion/occupancy triggers and conditions
+  input:
+    room:
+      name: Room
+      description: Area with motion/presence sensors and lights to automate.
+      selector:
+        area:
+    no_motion_wait:
+      name: Wait time
+      description: Time to keep the lights on after all sensors have been cleared.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: seconds
+          step: 1
+          mode: slider
+
+# If motion/presence is detected within the delay, restart the sequence.
+mode: restart
+
+triggers:
+  - trigger: motion.detected
+    target:
+      area_id: !input room
+  - trigger: occupancy.detected
+    target:
+      area_id: !input room
+
+actions:
+  - alias: Turn on the lights
+    action: light.turn_on
+    target:
+      area_id: !input room
+  - alias: Wait until no motion is detected in the room
+    if:
+      - condition: motion.is_detected
+        target:
+          area_id: !input room
+        options:
+          behavior: any
+    then:
+      - wait_for_trigger:
+          - trigger: motion.cleared
+            target:
+              area_id: !input room
+            options:
+              behavior: all
+  - alias: Wait until no occupancy is detected in the room
+    if:
+      - condition: occupancy.is_detected
+        target:
+          area_id: !input room
+        options:
+          behavior: any
+    then:
+      - wait_for_trigger:
+          - trigger: occupancy.cleared
+            target:
+              area_id: !input room
+            options:
+              behavior: all
+  - alias: Wait the configured delay
+    delay:
+      seconds: !input no_motion_wait
+  - alias: Turn off the lights
+    action: light.turn_off
+    target:
+      area_id: !input room
