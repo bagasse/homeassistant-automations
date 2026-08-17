@@ -1,0 +1,129 @@
+# More info about automations/blueprints:
+# - https://www.home-assistant.io/docs/automation/basics/
+# - https://www.home-assistant.io/docs/blueprint/
+# - https://companion.home-assistant.io/docs/notifications/notification-attachments
+blueprint:
+  name: Camera Object Detection Notification
+  description: >
+    Send a Companion app notification with a camera snapshot when selected
+    motion sensors detect an object such as a person or a vehicle.
+  domain: automation
+  author: Baptiste Agasse <baptiste.agasse@gmail.com>
+  source_url: https://raw.githubusercontent.com/bagasse/homeassistant-automations/refs/heads/main/blueprints/automations/bagasse/camera_object_detection_notification.yaml
+  homeassistant:
+    min_version: "2026.7.0" # Introduce motion.detected trigger
+  input:
+    sensors:
+      name: Sensors
+      icon: mdi:motion-sensor
+      input:
+        detection_sensors:
+          name: Detection sensors
+          description: >
+            Motion binary sensors that should trigger a notification
+            (person, vehicle, and similar object detectors).
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: motion
+              multiple: true
+        camera:
+          name: Camera
+          description: Camera used for the snapshot attached to the notification.
+          selector:
+            entity:
+              domain: camera
+    notification:
+      name: Notification
+      icon: mdi:bell
+      input:
+        notify_devices:
+          name: Devices to notify
+          description: Home Assistant Companion app devices that receive the snapshot.
+          selector:
+            device:
+              multiple: true
+              filter:
+                integration: mobile_app
+        notification_title:
+          name: Title
+          description: Title shown on the notification.
+          default: Camera
+          selector:
+            text:
+    settings:
+      name: Settings
+      icon: mdi:cog
+      collapsed: true
+      input:
+        snapshot_delay:
+          name: Snapshot delay
+          description: >
+            Seconds to wait after detection before taking the snapshot, so the
+            subject is more likely to be in frame.
+          default: 1
+          selector:
+            number:
+              min: 0
+              max: 10
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+        cooldown:
+          name: Cooldown
+          description: Seconds to wait after sending before another notification can be sent.
+          default: 60
+          selector:
+            number:
+              min: 0
+              max: 600
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+
+# Ignore retriggers while the snapshot, notify, and cooldown are running.
+mode: single
+max_exceeded: silent
+
+variables:
+  camera_entity: !input camera
+  notify_devices: !input notify_devices
+  notification_title: !input notification_title
+  snapshot_filename: "/config/www/{{ camera_entity.split('.')[1] }}_snapshot.jpg"
+  snapshot_url: "/local/{{ camera_entity.split('.')[1] }}_snapshot.jpg"
+
+triggers:
+  - trigger: motion.detected
+    target:
+      entity_id: !input detection_sensors
+
+actions:
+  - alias: Wait so the subject is in frame
+    delay:
+      seconds: !input snapshot_delay
+  - alias: Take a snapshot
+    action: camera.snapshot
+    continue_on_error: true
+    target:
+      entity_id: !input camera
+    data:
+      filename: "{{ snapshot_filename }}"
+  - alias: Notify devices with the snapshot
+    repeat:
+      for_each: "{{ notify_devices }}"
+      sequence:
+        - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+          data:
+            title: "{{ notification_title }}"
+            message: "{{ trigger.to_state.name }} detected"
+            data:
+              image: "{{ snapshot_url }}?t={{ now().timestamp() | int }}"
+              clickAction: "entityId:{{ camera_entity }}"
+              notification_icon: mdi:cctv
+              channel: Cameras
+              importance: high
+              ttl: 0
+              priority: high
+  - alias: Cooldown to avoid notification spam
+    delay:
+      seconds: !input cooldown
