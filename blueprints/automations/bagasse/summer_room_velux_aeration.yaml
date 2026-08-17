@@ -5,11 +5,11 @@ blueprint:
   name: Summer Room Velux Aeration
   description: >
     When house mode (`input_select.house_mode`) is `summer`, open the room's Velux
-    window covers (and optionally shutters) when the room is warmer than outdoors,
-    and close them again when the room temperature starts rising.
+    window (and optionally shutter) when the room is warmer than outdoors, and
+    close them again when the room temperature starts rising.
 
-    Discovers `cover` entities in the selected area by device class (`window` /
-    `shutter`), ignoring Overkiz `*_low_speed` siblings so each device is commanded once.
+    Picks the `window` and `shutter` cover in the selected area, ignoring Overkiz
+    `*_low_speed` siblings.
   domain: automation
   author: Baptiste Agasse <baptiste.agasse@gmail.com>
   source_url: https://github.com/bagasse/homeassistant-automations/blob/main/blueprints/automations/bagasse/summer_room_velux_aeration.yaml
@@ -19,8 +19,8 @@ blueprint:
     room:
       name: Room
       description: >
-        Area that contains the room temperature sensor(s), Velux window cover(s),
-        and optional shutter cover(s).
+        Area that contains the room temperature sensor, Velux window cover,
+        and optional shutter cover.
       selector:
         area:
     outdoor_temperature:
@@ -36,18 +36,7 @@ blueprint:
       input:
         window_position:
           name: Window position
-          description: Target open position for Velux window covers (100% = fully open).
-          default: 100
-          selector:
-            number:
-              min: 0
-              max: 100
-              step: 1
-              unit_of_measurement: "%"
-              mode: slider
-        shutter_position:
-          name: Shutter position
-          description: Target open position for shutter covers when managed (100% = fully open).
+          description: Target open position for the Velux window (100% = fully open).
           default: 100
           selector:
             number:
@@ -64,11 +53,22 @@ blueprint:
         manage_shutter:
           name: Manage shutters
           description: >
-            When enabled, open shutters before windows, and close shutters after
-            windows.
+            When enabled, open the shutter before the window, and close the
+            shutter after the window.
           default: true
           selector:
             boolean:
+        shutter_position:
+          name: Shutter position
+          description: Target open position for the shutter when managed (100% = fully open).
+          default: 100
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
         action_delay:
           name: Delay between shutter and window
           description: >
@@ -93,36 +93,25 @@ trigger_variables:
 
 variables:
   window_position: !input window_position
-  shutter_position: !input shutter_position
   manage_shutter: !input manage_shutter
-  window_covers: >
+   # Use low speed siblings as it makes less noise
+  window_cover: >
     {{ expand(area_entities(room))
        | selectattr('domain', 'eq', 'cover')
        | selectattr('attributes.device_class', 'eq', 'window')
-       | rejectattr('entity_id', 'search', '_low_speed$')
+       | selectattr('entity_id', 'search', '_low_speed$')"
        | map(attribute='entity_id')
-       | list }}
-  shutter_covers: >
+       | first
+       | default(none, true) }}
+  # Use low speed siblings as it makes less noise
+  shutter_cover: >
     {{ expand(area_entities(room))
        | selectattr('domain', 'eq', 'cover')
        | selectattr('attributes.device_class', 'eq', 'shutter')
-       | rejectattr('entity_id', 'search', '_low_speed$')
+       | selectattr('entity_id', 'search', '_low_speed$')
        | map(attribute='entity_id')
-       | list }}
-  windows_need_open: >
-    {{ window_covers
-       | map('state_attr', 'current_position')
-       | reject('none')
-       | select('lt', window_position)
-       | list
-       | count > 0 }}
-  windows_are_open: >
-    {{ window_covers
-       | map('state_attr', 'current_position')
-       | reject('none')
-       | select('gt', 0)
-       | list
-       | count > 0 }}
+       | first
+       | default(none, true) }}
 
 triggers:
   - trigger: temperature.crossed_threshold
@@ -156,15 +145,14 @@ conditions:
     state: summer
 
 actions:
-  - alias: Stop if the room has no Velux window covers
+  - alias: Stop if the room has no Velux window
     if:
-      - condition: template
-        value_template: "{{ window_covers | count == 0 }}"
+      - "{{ window_cover is none }}"
     then:
-      - stop: "No window covers found in the selected room"
+      - stop: "No window cover found in the selected room"
 
   - choose:
-      - alias: Open shutters then windows when the room is warmer than outdoors
+      - alias: Open shutter then window when the room is warmer than outdoors
         conditions:
           - condition: trigger
             id: open
@@ -177,51 +165,43 @@ actions:
                 value:
                   entity: !input outdoor_temperature
               behavior: any
-          - condition: template
-            value_template: "{{ windows_need_open }}"
+          - "{{ state_attr(window_cover, 'current_position') | float(0) < window_position }}"
         sequence:
-          - alias: Open shutters first when managed
+          - alias: Open shutter first when managed
             if:
-              - condition: template
-                value_template: "{{ manage_shutter and shutter_covers | count > 0 }}"
+              - "{{ manage_shutter and shutter_cover is not none }}"
             then:
               - action: cover.set_cover_position
                 target:
-                  entity_id: "{{ shutter_covers }}"
+                  entity_id: "{{ shutter_cover }}"
                 data:
-                  position: "{{ shutter_position }}"
+                  position: !input shutter_position
               - delay:
                   seconds: !input action_delay
-          - alias: Open Velux windows
+          - alias: Open Velux window
             action: cover.set_cover_position
             target:
-              entity_id: "{{ window_covers }}"
+              entity_id: "{{ window_cover }}"
             data:
-              position: "{{ window_position }}"
+              position: !input window_position
 
-      - alias: Close windows then shutters when room temperature is increasing
+      - alias: Close window then shutter when room temperature is increasing
         conditions:
           - condition: trigger
             id: close
-          - condition: template
-            value_template: >
-              {{ trigger.from_state is defined
-                 and trigger.to_state is defined
-                 and trigger.to_state.state | float(0) > trigger.from_state.state | float(0) }}
-          - condition: template
-            value_template: "{{ windows_are_open }}"
+          - "{{ trigger.to_state.state | float(0) > trigger.from_state.state | float(0) }}"
+          - "{{ state_attr(window_cover, 'current_position') | float(0) > 0 }}"
         sequence:
-          - alias: Close Velux windows
+          - alias: Close Velux window
             action: cover.close_cover
             target:
-              entity_id: "{{ window_covers }}"
-          - alias: Close shutters after windows when managed
+              entity_id: "{{ window_cover }}"
+          - alias: Close shutter after window when managed
             if:
-              - condition: template
-                value_template: "{{ manage_shutter and shutter_covers | count > 0 }}"
+              - "{{ manage_shutter and shutter_cover is not none }}"
             then:
               - delay:
                   seconds: !input action_delay
               - action: cover.close_cover
                 target:
-                  entity_id: "{{ shutter_covers }}"
+                  entity_id: "{{ shutter_cover }}"
